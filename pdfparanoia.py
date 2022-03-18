@@ -13,23 +13,22 @@ Functions:
     extensions_in_directories(path) -> iterable
     filestem_adder(str) -> str
     filestem_remover(str) -> str
-
-TODO: Add docstrings for filestem functions
-Work-out better structure/logic for the en/decryption pathways
 """
 import argparse
 import difflib
 import logging
-import PyPDF2
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
+
+import PyPDF2
+import send2trash
 
 logging.basicConfig(
     filename="pdfparanoia_DEBUG.txt",
     level=logging.DEBUG,
     format=" %(asctime)s - %(levelname)s - %(message)s",
 )
-#logging.disable(logging.CRITICAL)
+logging.disable(logging.CRITICAL)
 
 parser = argparse.ArgumentParser(
     description="Encrypt or decrypt every PDF in folder and subfolder from commandline using provided password."
@@ -82,58 +81,70 @@ def choose_folder(folder_paths: List[Path]) -> Optional[Path]:
     if len(folder_paths) == 1:
         return folder_paths[0]
     if (match := fuzzy_input(
-        [x for x in folder_paths],
+        folder_paths,
         prompt="You have multiple folders with that name. Choose one of them."
     )) is None:
         return None
     return match
 
 def extensions_in_directories(directory: Path, extension: str) -> Iterable[Path]:
-    """Returns every file with the correct extension in directory plus
+    """Return every file with the correct extension in directory plus
     subdirectories.
     """
     yield from directory.rglob(f"*{extension}")
 
 
 def filestem_adder(filename: str, text: str) -> str:
+    """Add text to a filename before the file extension"""
     filepath = Path(filename)
     new_filename = f"{filepath.stem}{text}{filepath.suffix}"
     return new_filename
 
 def filestem_remover(filename: str, text: str) -> str:
+    """Remove text from a filename before the file extension if text exists"""
     filepath = Path(filename)
-    if not filepath.name.endswith(text):
-        print(f"{filepath.name} does not end in {text}.")
+    if not filepath.stem.endswith(text):
+        print(f"{filepath.stem} does not end in {text}.")
         return filepath.name
-    text_start_index = len(filepath.name)-len(text)
-    new_filename = f"{filepath.name[0:text_start_index]}{filepath.suffix}"
+    text_start_index = len(filepath.stem)-len(text)
+    new_filename = f"{filepath.stem[0:text_start_index]}{filepath.suffix}"
     return new_filename
 
 def main():
-    directory = choose_folder(get_folder(args.folder))
-    for pdf in extensions_in_directories(directory, "pdf"):
+    """Create new un/encrypted file, delete old file."""
+    directory = choose_folder(get_folders(args.folder))
+    for pdf in extensions_in_directories(directory, ".pdf"):
         was_encrypted = False
-        with open(pdf, 'rb') as input_pdf:
+        new_filename = pdf.name
+        with open(pdf, "rb") as input_pdf:
             pdf_reader = PyPDF2.PdfFileReader(input_pdf)
             pdf_writer = PyPDF2.PdfFileWriter()
             if pdf_reader.isEncrypted:
                 was_encrypted = True
-                pdf_reader.decrypt(args.password)
+                if pdf_reader.decrypt(args.password) == 0:
+                    print(f"{args.password} didn't unlock {pdf.name}. Skipping...")
+                    continue
             for page_num in range(pdf_reader.numPages):
-                try:
-                    pdf_writer.addPage(pdf_reader.getPage(page_num))
-                except PdfReadError:
-                    print(f"{args.password} didn't unlock {pdf.name}. Skipping..."})
-                    break
+                pdf_writer.addPage(pdf_reader.getPage(page_num))
             if not was_encrypted:
                 pdf_writer.encrypt(args.password)
-            #TODO: make a new file name based on if was_encrypted or not
-            if pdf_writer.getNumPages() > 0:
-                #check if there's actually content in the file to create a new pdf
-                with open(new_filename, 'wb') as output_pdf:
-                    pdf_writer.write(output_pdf)
-        logging.debug(f"{pdf} was encrypted? {was_encrypted}")
-        #TODO: the new pdf checks, delete the old pdfs. Use the was_encrypted flag
+                new_filename = filestem_adder(new_filename, "_paranoia_encrypted")
+                logging.debug(f"The filename is now {new_filename} after addition")
+            else:
+                new_filename = filestem_remover(new_filename, "_paranoia_encrypted")
+                logging.debug(f"The filename is now {new_filename} after removal")
+            logging.debug(f"IN WITH {pdf.name} was encrypted? {was_encrypted}")
+            with open(pdf.parent.resolve() / new_filename, "wb") as output_pdf:
+                pdf_writer.write(output_pdf)
+        logging.debug(f" IN FOR {pdf.name} was encrypted? {was_encrypted}")
+        if not was_encrypted:
+            with open(pdf.parent.resolve() / new_filename, "rb") as check_pdf:
+                pdf_reader = PyPDF2.PdfFileReader(check_pdf)
+                if not pdf_reader.isEncrypted and pdf_reader.decrypt(args.password) == 0:
+                    print(f"Something went wrong. {new_filename} not encrypted correctly.")
+                    break
+        #print(f"Well, I was thinking about sending {pdf.name} to the trash.")
+        send2trash.send2trash(pdf)
 
-if __name__ = "__main__":
+if __name__ == "__main__":
     main()
